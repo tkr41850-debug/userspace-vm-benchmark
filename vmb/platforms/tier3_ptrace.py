@@ -7,7 +7,7 @@ from typing import Optional
 from .base import Platform
 from ..util import (
     CapCheck, CapStatus, NetBackend, Tier,
-    build_from_source, which, run, console, LOCAL_BIN, LOCAL_DIR,
+    build_from_source, ensure_talloc, which, run, console, LOCAL_BIN, LOCAL_DIR,
 )
 
 
@@ -79,10 +79,12 @@ class ProotPlatform(Platform):
     def ensure_installed(self) -> bool:
         if which("proot"):
             return True
+        ensure_talloc()
         return build_from_source(
             "proot",
             "https://github.com/proot-me/proot.git",
             [
+                "make -C src -j$(nproc) LDFLAGS='-static -ltalloc' || "
                 "make -C src -j$(nproc)",
                 f"cp src/proot {LOCAL_BIN}/",
             ],
@@ -121,8 +123,8 @@ class MboxPlatform(Platform):
             "mbox",
             "https://github.com/tsgates/mbox.git",
             [
-                "cd src && make -j$(nproc)",
-                f"cp src/mbox {LOCAL_BIN}/",
+                "make -j$(nproc)",
+                f"cp mbox {LOCAL_BIN}/",
             ],
             "mbox",
             branch="master",

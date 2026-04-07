@@ -19,10 +19,9 @@ def install_slirp() -> bool:
         "slirp4netns",
         "https://github.com/rootless-containers/slirp4netns.git",
         [
-            f"./autogen.sh 2>/dev/null || true",
-            f"./configure --prefix={LOCAL_BIN}/.. 2>/dev/null || "
-            f"(apt-get source slirp4netns 2>/dev/null || echo 'manual build needed')",
-            f"make -j$(nproc) && make install prefix={LOCAL_BIN}/..",
+            "autoreconf -fi",
+            f"./configure --prefix={LOCAL_BIN}/..",
+            f"make -j$(nproc) && make install",
         ],
         "slirp4netns",
         branch="master",
@@ -44,7 +43,7 @@ def install_passt() -> bool:
         "passt",
         "https://passt.top/passt",
         [
-            f"make -j$(nproc) prefix={LOCAL_BIN}/.. && make install prefix={LOCAL_BIN}/..",
+            f"make -j$(nproc) prefix={LOCAL_BIN}/.. CFLAGS='-std=gnu11 -O2 -pie -fPIE' && make install prefix={LOCAL_BIN}/..",
         ],
         "passt",
         branch="master",

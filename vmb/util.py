@@ -192,6 +192,41 @@ def build_from_source(name: str, repo_url: str, build_cmds: list[str],
         return False
 
 
+def ensure_talloc() -> bool:
+    """Build libtalloc from source into ~/.local/ if not present."""
+    import ctypes.util
+    talloc_h = LOCAL_DIR / "include" / "talloc.h"
+    if talloc_h.exists() or ctypes.util.find_library("talloc"):
+        return True
+    import multiprocessing
+    nproc = multiprocessing.cpu_count()
+    src = SRC_DIR / "talloc"
+    build_env = {**os.environ,
+                 "PREFIX": str(LOCAL_DIR),
+                 "PKG_CONFIG_PATH": str(LOCAL_LIB / "pkgconfig")}
+    try:
+        if not src.exists():
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", "-b", "master",
+                 "https://github.com/samba-team/talloc.git", str(src)],
+                timeout=120, capture_output=True, text=True, env=build_env,
+            )
+            if r.returncode != 0:
+                print(f"\n[BUILD FAIL] talloc clone:\n{r.stderr}", flush=True)
+                return False
+        for cmd in [f"./configure --prefix={LOCAL_DIR} --disable-python",
+                    f"make -j{nproc}", "make install"]:
+            r = subprocess.run(["sh", "-c", cmd], cwd=str(src), timeout=300,
+                               capture_output=True, text=True, env=build_env)
+            if r.returncode != 0:
+                print(f"\n[BUILD FAIL] talloc:\n{r.stderr[-2000:]}", flush=True)
+                return False
+        return talloc_h.exists()
+    except subprocess.TimeoutExpired:
+        print("\n[BUILD FAIL] talloc: timed out", flush=True)
+        return False
+
+
 def format_bytes(n: float) -> str:
     """Format bytes to human readable."""
     for unit in ("B", "KB", "MB", "GB", "TB"):

@@ -87,6 +87,8 @@ class NsjailPlatform(Platform):
     def ensure_installed(self) -> bool:
         if which("nsjail"):
             return True
+        if not which("protoc"):
+            return False  # nsjail requires protobuf compiler
         return build_from_source(
             "nsjail",
             "https://github.com/google/nsjail.git",
@@ -201,12 +203,13 @@ class CharliecloudPlatform(Platform):
             "charliecloud",
             "https://github.com/hpc/charliecloud.git",
             [
-                f"./configure --prefix={LOCAL_DIR}",
+                "autoreconf -fi || true",
+                f"./configure --prefix={LOCAL_DIR} --disable-doc",
                 "make -j$(nproc)",
                 "make install",
             ],
             "ch-run",
-            branch="main",
+            branch="master",
         )
 
     def run_command(self, cmd: list[str], network: NetBackend,
