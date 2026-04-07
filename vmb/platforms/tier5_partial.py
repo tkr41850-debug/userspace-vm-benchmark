@@ -59,6 +59,7 @@ class FakechrootPlatform(Platform):
             "fakechroot",
             "https://github.com/dex4er/fakechroot.git",
             [
+                "libtoolize --force --copy",
                 "autoreconf -fi",
                 f"./configure --prefix={LOCAL_DIR}",
                 "make -j$(nproc)",

@@ -84,8 +84,7 @@ class ProotPlatform(Platform):
             "proot",
             "https://github.com/proot-me/proot.git",
             [
-                "make -C src -j$(nproc) LDFLAGS='-static -ltalloc' || "
-                "make -C src -j$(nproc)",
+                f"make -C src -j$(nproc) CFLAGS='-I{LOCAL_DIR}/include' LDFLAGS='-L{LOCAL_DIR}/lib -ltalloc'",
                 f"cp src/proot {LOCAL_BIN}/",
             ],
             "proot",
@@ -114,21 +113,10 @@ class MboxPlatform(Platform):
             return CapCheck(CapStatus.UNAVAILABLE, reason="mbox cannot use tun/tap")
         if which("mbox"):
             return CapCheck(CapStatus.READY, binary_path=which("mbox"))
-        return CapCheck(CapStatus.INSTALLABLE, reason="mbox not found")
+        return CapCheck(CapStatus.UNAVAILABLE, reason="mbox source repo is not buildable (Arch package only)")
 
     def ensure_installed(self) -> bool:
-        if which("mbox"):
-            return True
-        return build_from_source(
-            "mbox",
-            "https://github.com/tsgates/mbox.git",
-            [
-                "make -j$(nproc)",
-                f"cp mbox {LOCAL_BIN}/",
-            ],
-            "mbox",
-            branch="master",
-        )
+        return which("mbox") is not None
 
     def run_command(self, cmd: list[str], network: NetBackend,
                     disk_path: Optional[Path] = None, timeout: int = 120) -> str:

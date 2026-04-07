@@ -175,18 +175,28 @@ def install_platforms(platforms_list, scan_results: dict,
 
     overall = progress.add_task("Overall", total=total)
     build_tasks: dict[str, int] = {}
+    failures: list[str] = []
 
     def do_build(name: str, build_fn) -> tuple[str, bool]:
         tid = build_tasks[name]
         progress.update(tid, description=f"[yellow]{name}[/yellow]")
-        ok = build_fn()
+        import io, sys as _sys
+        buf = io.StringIO()
+        old_stdout, old_stderr = _sys.stdout, _sys.stderr
+        _sys.stdout = _sys.stderr = buf
+        try:
+            ok = build_fn()
+        finally:
+            _sys.stdout, _sys.stderr = old_stdout, old_stderr
+        captured = buf.getvalue()
+        if not ok and captured.strip():
+            failures.append(captured)
         status = "[green]done[/green]" if ok else "[red]FAILED[/red]"
         progress.update(tid, description=f"{name} {status}", completed=1)
         progress.advance(overall)
         return name, ok
 
     with progress:
-        # Pre-create a task row per build so they all show as queued
         for plat in to_install:
             tid = progress.add_task(f"[dim]{plat.name} queued[/dim]", total=1, completed=0)
             build_tasks[plat.name] = tid
@@ -207,6 +217,9 @@ def install_platforms(platforms_list, scan_results: dict,
                 name, ok = f.result()
                 if ok and name in to_install_names:
                     installed.add(name)
+
+    for msg in failures:
+        print(msg, flush=True)
 
     return installed
 

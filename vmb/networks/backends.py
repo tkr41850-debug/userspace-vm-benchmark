@@ -43,7 +43,9 @@ def install_passt() -> bool:
         "passt",
         "https://passt.top/passt",
         [
-            f"make -j$(nproc) prefix={LOCAL_BIN}/.. CFLAGS='-std=gnu11 -O2 -pie -fPIE' && make install prefix={LOCAL_BIN}/..",
+            "sed -i 's/-std=c11/-std=gnu11/g' Makefile",
+            f"make -j$(nproc) prefix={LOCAL_BIN}/..",
+            f"make install prefix={LOCAL_BIN}/..",
         ],
         "passt",
         branch="master",

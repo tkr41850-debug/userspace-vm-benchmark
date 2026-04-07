@@ -144,6 +144,7 @@ def build_from_source(name: str, repo_url: str, build_cmds: list[str],
         return True
 
     nproc = multiprocessing.cpu_count()
+    # Only set PKG_CONFIG_PATH — don't set CFLAGS/LDFLAGS as they break configure tests
     build_env = {
         "PREFIX": str(LOCAL_DIR),
         "prefix": str(LOCAL_DIR),
@@ -153,8 +154,6 @@ def build_from_source(name: str, repo_url: str, build_cmds: list[str],
             str(LOCAL_DIR / "share" / "pkgconfig"),
             os.environ.get("PKG_CONFIG_PATH", ""),
         ])),
-        "CFLAGS": f"-I{LOCAL_DIR}/include",
-        "LDFLAGS": f"-L{LOCAL_LIB}",
     }
 
     try:
@@ -169,14 +168,12 @@ def build_from_source(name: str, repo_url: str, build_cmds: list[str],
                 return False
 
         for cmd in build_cmds:
-            # Replace $(nproc) with actual count for shell commands
             if isinstance(cmd, str):
                 cmd = cmd.replace("$(nproc)", str(nproc))
-            full_env = {**os.environ, **build_env}
             r = subprocess.run(
                 cmd if isinstance(cmd, list) else ["sh", "-c", cmd],
                 cwd=str(src), timeout=600, capture_output=True, text=True,
-                env=full_env,
+                env={**os.environ, **build_env},
             )
             if r.returncode != 0:
                 print(f"\n[BUILD FAIL] {name}:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}", flush=True)
