@@ -13,8 +13,46 @@ def check_slirp() -> CapCheck:
     return CapCheck(CapStatus.INSTALLABLE, reason="slirp4netns not found, can build from source")
 
 
+def _ensure_libslirp() -> bool:
+    """Build libslirp from source into ~/.local/ if not present."""
+    from ..util import SRC_DIR, LOCAL_DIR, LOCAL_LIB, ensure_cmake_ninja
+    import os, subprocess, multiprocessing
+    if (LOCAL_LIB / "pkgconfig" / "slirp.pc").exists():
+        return True
+    if not ensure_cmake_ninja():
+        return False
+    src = SRC_DIR / "libslirp"
+    build_env = {**os.environ,
+                 "PKG_CONFIG_PATH": str(LOCAL_LIB / "pkgconfig")}
+    try:
+        if not src.exists():
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1",
+                 "https://gitlab.freedesktop.org/slirp/libslirp.git", str(src)],
+                timeout=120, capture_output=True, text=True, env=build_env,
+            )
+            if r.returncode != 0:
+                return False
+        nproc = multiprocessing.cpu_count()
+        for cmd in [
+            f"meson setup build --prefix={LOCAL_DIR} --default-library=static",
+            f"ninja -C build",
+            f"ninja -C build install",
+        ]:
+            r = subprocess.run(["sh", "-c", cmd], cwd=str(src), timeout=300,
+                               capture_output=True, text=True, env=build_env)
+            if r.returncode != 0:
+                print(f"\n[BUILD FAIL] libslirp:\n{r.stderr[-2000:]}", flush=True)
+                return False
+        return (LOCAL_LIB / "pkgconfig" / "slirp.pc").exists()
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def install_slirp() -> bool:
     """Build slirp4netns from source."""
+    if not _ensure_libslirp():
+        return False
     return build_from_source(
         "slirp4netns",
         "https://github.com/rootless-containers/slirp4netns.git",

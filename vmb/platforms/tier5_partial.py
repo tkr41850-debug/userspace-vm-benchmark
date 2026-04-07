@@ -54,12 +54,13 @@ class FakechrootPlatform(Platform):
     def ensure_installed(self) -> bool:
         if which("fakechroot"):
             return True
-        from ..util import build_from_source, LOCAL_DIR
+        from ..util import build_from_source, LOCAL_DIR, ensure_libtool
+        if not ensure_libtool():
+            return False
         return build_from_source(
             "fakechroot",
             "https://github.com/dex4er/fakechroot.git",
             [
-                "libtoolize --force --copy",
                 "autoreconf -fi",
                 f"./configure --prefix={LOCAL_DIR}",
                 "make -j$(nproc)",

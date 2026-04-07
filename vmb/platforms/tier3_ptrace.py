@@ -79,7 +79,8 @@ class ProotPlatform(Platform):
     def ensure_installed(self) -> bool:
         if which("proot"):
             return True
-        ensure_talloc()
+        if not ensure_talloc():
+            return False
         return build_from_source(
             "proot",
             "https://github.com/proot-me/proot.git",

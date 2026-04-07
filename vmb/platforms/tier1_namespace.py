@@ -204,7 +204,7 @@ class CharliecloudPlatform(Platform):
             "https://github.com/hpc/charliecloud.git",
             [
                 "autoreconf -fi || true",
-                f"./configure --prefix={LOCAL_DIR}",
+                f"./configure --prefix={LOCAL_DIR} --disable-python",
                 "make -j$(nproc)",
                 "make install",
             ],

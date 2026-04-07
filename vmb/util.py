@@ -189,6 +189,98 @@ def build_from_source(name: str, repo_url: str, build_cmds: list[str],
         return False
 
 
+def ensure_cmake_ninja() -> bool:
+    """Install cmake and ninja locally via their bootstrap scripts if missing."""
+    import multiprocessing
+    nproc = multiprocessing.cpu_count()
+    needs = []
+    if not which("cmake"):
+        needs.append("cmake")
+    if not which("ninja"):
+        needs.append("ninja")
+    if not needs:
+        return True
+
+    if "cmake" in needs:
+        src = SRC_DIR / "cmake"
+        try:
+            if not src.exists():
+                r = subprocess.run(
+                    ["git", "clone", "--depth", "1", "-b", "v3.28.0",
+                     "https://github.com/Kitware/CMake.git", str(src)],
+                    timeout=300, capture_output=True, text=True, env=os.environ,
+                )
+                if r.returncode != 0:
+                    print(f"\n[BUILD FAIL] cmake clone:\n{r.stderr}", flush=True)
+                    return False
+            for cmd in [f"./bootstrap --prefix={LOCAL_DIR} --parallel={nproc}",
+                        f"make -j{nproc}", "make install"]:
+                r = subprocess.run(["sh", "-c", cmd], cwd=str(src), timeout=600,
+                                   capture_output=True, text=True, env=os.environ)
+                if r.returncode != 0:
+                    print(f"\n[BUILD FAIL] cmake:\n{r.stderr[-2000:]}", flush=True)
+                    return False
+        except subprocess.TimeoutExpired:
+            print("\n[BUILD FAIL] cmake: timed out", flush=True)
+            return False
+
+    if "ninja" in needs:
+        src = SRC_DIR / "ninja"
+        try:
+            if not src.exists():
+                r = subprocess.run(
+                    ["git", "clone", "--depth", "1", "-b", "v1.11.1",
+                     "https://github.com/ninja-build/ninja.git", str(src)],
+                    timeout=120, capture_output=True, text=True, env=os.environ,
+                )
+                if r.returncode != 0:
+                    print(f"\n[BUILD FAIL] ninja clone:\n{r.stderr}", flush=True)
+                    return False
+            for cmd in ["python3 configure.py --bootstrap",
+                        f"cp ninja {LOCAL_BIN}/"]:
+                r = subprocess.run(["sh", "-c", cmd], cwd=str(src), timeout=300,
+                                   capture_output=True, text=True, env=os.environ)
+                if r.returncode != 0:
+                    print(f"\n[BUILD FAIL] ninja:\n{r.stderr[-2000:]}", flush=True)
+                    return False
+        except subprocess.TimeoutExpired:
+            print("\n[BUILD FAIL] ninja: timed out", flush=True)
+            return False
+
+    return bool(which("cmake") and which("ninja"))
+
+
+def ensure_libtool() -> bool:
+    """Build libtool from source into ~/.local/ if not present."""
+    if which("libtoolize"):
+        return True
+    import multiprocessing
+    nproc = multiprocessing.cpu_count()
+    src = SRC_DIR / "libtool"
+    build_env = {**os.environ, "PKG_CONFIG_PATH": str(LOCAL_LIB / "pkgconfig")}
+    try:
+        if not src.exists():
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", "-b", "v2.4.7",
+                 "https://git.savannah.gnu.org/git/libtool.git", str(src)],
+                timeout=120, capture_output=True, text=True, env=build_env,
+            )
+            if r.returncode != 0:
+                print(f"\n[BUILD FAIL] libtool clone:\n{r.stderr}", flush=True)
+                return False
+        for cmd in ["./bootstrap", f"./configure --prefix={LOCAL_DIR}",
+                    f"make -j{nproc}", "make install"]:
+            r = subprocess.run(["sh", "-c", cmd], cwd=str(src), timeout=300,
+                               capture_output=True, text=True, env=build_env)
+            if r.returncode != 0:
+                print(f"\n[BUILD FAIL] libtool:\n{r.stderr[-2000:]}", flush=True)
+                return False
+        return bool(which("libtoolize"))
+    except subprocess.TimeoutExpired:
+        print("\n[BUILD FAIL] libtool: timed out", flush=True)
+        return False
+
+
 def ensure_talloc() -> bool:
     """Build libtalloc from source into ~/.local/ if not present."""
     import ctypes.util
