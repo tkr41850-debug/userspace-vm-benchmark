@@ -138,29 +138,57 @@ def check_tun_tap() -> bool:
 def build_from_source(name: str, repo_url: str, build_cmds: list[str],
                       check_binary: str, branch: str = "main") -> bool:
     """Clone and build a project from source into ~/.local/."""
+    import multiprocessing
     src = SRC_DIR / name
     if which(check_binary):
-        console.print(f"  [dim]{name} already installed at {which(check_binary)}[/dim]")
         return True
 
-    console.print(f"  [yellow]Building {name} from source...[/yellow]")
+    nproc = multiprocessing.cpu_count()
+    build_env = {
+        "PREFIX": str(LOCAL_DIR),
+        "prefix": str(LOCAL_DIR),
+        "NPROC": str(nproc),
+        "PKG_CONFIG_PATH": ":".join(filter(None, [
+            str(LOCAL_LIB / "pkgconfig"),
+            str(LOCAL_DIR / "share" / "pkgconfig"),
+            os.environ.get("PKG_CONFIG_PATH", ""),
+        ])),
+        "CFLAGS": f"-I{LOCAL_DIR}/include",
+        "LDFLAGS": f"-L{LOCAL_LIB}",
+    }
+
     try:
         if not src.exists():
-            run(["git", "clone", "--depth", "1", "-b", branch, repo_url, str(src)],
-                timeout=120)
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", "-b", branch, repo_url, str(src)],
+                timeout=120, capture_output=True, text=True,
+                env={**os.environ, **build_env},
+            )
+            if r.returncode != 0:
+                print(f"\n[BUILD FAIL] {name} clone:\n{r.stderr}", flush=True)
+                return False
+
         for cmd in build_cmds:
-            run(cmd, cwd=str(src), timeout=600)
+            # Replace $(nproc) with actual count for shell commands
+            if isinstance(cmd, str):
+                cmd = cmd.replace("$(nproc)", str(nproc))
+            full_env = {**os.environ, **build_env}
+            r = subprocess.run(
+                cmd if isinstance(cmd, list) else ["sh", "-c", cmd],
+                cwd=str(src), timeout=600, capture_output=True, text=True,
+                env=full_env,
+            )
+            if r.returncode != 0:
+                print(f"\n[BUILD FAIL] {name}:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}", flush=True)
+                return False
+
         if which(check_binary):
-            console.print(f"  [green]{name} built successfully[/green]")
             return True
         else:
-            console.print(f"  [red]{name} built but binary not found: {check_binary}[/red]")
+            print(f"\n[BUILD FAIL] {name}: binary not found after build: {check_binary}", flush=True)
             return False
-    except subprocess.CalledProcessError as e:
-        console.print(f"  [red]Build failed for {name}: {e.stderr[:200] if e.stderr else e}[/red]")
-        return False
     except subprocess.TimeoutExpired:
-        console.print(f"  [red]Build timed out for {name}[/red]")
+        print(f"\n[BUILD FAIL] {name}: timed out", flush=True)
         return False
 
 

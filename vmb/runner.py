@@ -132,43 +132,81 @@ def print_capability_matrix(scan_results: dict, platforms_list, networks: list[N
 def install_platforms(platforms_list, scan_results: dict,
                       networks: list[NetBackend]) -> set[str]:
     """Install platforms that need building. Return set of installed platform names."""
-    to_install = set()
+    import multiprocessing
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    to_install_names = set()
     for plat in platforms_list:
         for net in networks:
             key = f"{plat.name}+{net.value}"
             if scan_results.get(key, {}).get("status") == "installable":
-                to_install.add(plat.name)
+                to_install_names.add(plat.name)
 
-    if not to_install:
+    # Also collect network backends that need installing
+    nets_to_install = [
+        net for net in networks
+        if check_network(net).status == CapStatus.INSTALLABLE
+    ]
+
+    to_install = [p for p in platforms_list if p.name in to_install_names]
+    total = len(to_install) + len(nets_to_install)
+
+    if not total:
         console.print("[dim]All available platforms already installed.[/dim]")
         return set()
 
-    console.print(f"\n[bold]Building {len(to_install)} platforms from source...[/bold]\n")
+    console.print(f"\n[bold]Building {total} components from source...[/bold]")
+    console.print(f"[dim]Queued: {', '.join(p.name for p in to_install) + (', ' + ', '.join(n.value for n in nets_to_install) if nets_to_install else '')}[/dim]\n")
 
     installed = set()
+    # Use half the cores for parallel builds (each build uses make -j$(nproc))
+    nproc = multiprocessing.cpu_count()
+    max_parallel = max(1, nproc // 4)
+
     progress = Progress(
         SpinnerColumn(),
-        TextColumn("[bold yellow]{task.description}"),
-        BarColumn(bar_width=40),
+        TextColumn("[bold yellow]{task.description:<20}"),
+        BarColumn(bar_width=30),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
+        console=console,
+        transient=False,
     )
 
-    with progress:
-        task = progress.add_task("Building...", total=len(to_install))
-        for plat in platforms_list:
-            if plat.name in to_install:
-                progress.update(task, description=f"Building {plat.name}...")
-                if plat.ensure_installed():
-                    installed.add(plat.name)
-                progress.advance(task)
+    overall = progress.add_task("Overall", total=total)
+    build_tasks: dict[str, int] = {}
 
-    # Also install network backends
-    for net in networks:
-        net_check = check_network(net)
-        if net_check.status == CapStatus.INSTALLABLE:
-            console.print(f"  [yellow]Installing network backend: {net.value}...[/yellow]")
-            ensure_network(net)
+    def do_build(name: str, build_fn) -> tuple[str, bool]:
+        tid = build_tasks[name]
+        progress.update(tid, description=f"[yellow]{name}[/yellow]")
+        ok = build_fn()
+        status = "[green]done[/green]" if ok else "[red]FAILED[/red]"
+        progress.update(tid, description=f"{name} {status}", completed=1)
+        progress.advance(overall)
+        return name, ok
+
+    with progress:
+        # Pre-create a task row per build so they all show as queued
+        for plat in to_install:
+            tid = progress.add_task(f"[dim]{plat.name} queued[/dim]", total=1, completed=0)
+            build_tasks[plat.name] = tid
+        for net in nets_to_install:
+            tid = progress.add_task(f"[dim]{net.value} queued[/dim]", total=1, completed=0)
+            build_tasks[net.value] = tid
+
+        with ThreadPoolExecutor(max_workers=max_parallel) as ex:
+            futures = {}
+            for plat in to_install:
+                f = ex.submit(do_build, plat.name, plat.ensure_installed)
+                futures[f] = plat.name
+            for net in nets_to_install:
+                f = ex.submit(do_build, net.value, lambda n=net: bool(ensure_network(n).status == CapStatus.READY))
+                futures[f] = net.value
+
+            for f in as_completed(futures):
+                name, ok = f.result()
+                if ok and name in to_install_names:
+                    installed.add(name)
 
     return installed
 
@@ -248,39 +286,71 @@ def run_all_benchmarks(platforms_list, networks: list[NetBackend],
     )
     results.append(baseline_result)
 
+    import multiprocessing
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    nproc = multiprocessing.cpu_count()
+    # Estimate cores each benchmark combo uses:
+    # VMs (tier2) use ~4 cores (qemu), wasm runtimes ~1, namespace ~1, ptrace ~2
+    def cores_for(plat) -> int:
+        tier = plat.tier.value
+        if "tier2" in tier:
+            return 4
+        if "tier3" in tier:
+            return 2
+        return 1
+
+    # Max parallel = floor(nproc / typical_cores), at least 1
+    max_parallel = max(1, nproc // 2)
+
+    lock = threading.Lock()
     progress = Progress(
         SpinnerColumn(),
-        TextColumn("[bold green]{task.description}"),
-        BarColumn(bar_width=40),
+        TextColumn("[bold green]{task.description:<24}"),
+        BarColumn(bar_width=20),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
-        TimeRemainingColumn(),
+        console=console,
     )
 
+    overall = progress.add_task("Benchmarking", total=len(runnable))
+    row_tasks: dict[str, int] = {}
+
+    def bench_one(plat, net) -> PlatformNetResult:
+        key = f"{plat.name}+{net.value}"
+        with lock:
+            tid = row_tasks.get(key)
+            if tid is not None:
+                progress.update(tid, description=f"[green]{plat.name}[/green]")
+        disk = vm_disks.get(plat.name)
+        t0 = time.monotonic()
+        try:
+            r = plat.run_benchmarks(network=net, disk_path=disk)
+            r.setup_time = time.monotonic() - t0
+        except Exception as e:
+            r = PlatformNetResult(
+                platform=plat.name, network=net.value, tier=plat.tier,
+                cap_check=CapCheck(CapStatus.READY),
+                errors=[str(e)], setup_time=time.monotonic() - t0,
+            )
+        with lock:
+            if tid is not None:
+                status = "[red]fail[/red]" if r.errors else "[dim]done[/dim]"
+                progress.update(tid, description=f"{plat.name} {status}", completed=1)
+            progress.advance(overall)
+        return r
+
     with progress:
-        task = progress.add_task("Benchmarking...", total=len(runnable))
-
         for plat, net in runnable:
-            desc = f"{plat.name} + {net.value}"
-            progress.update(task, description=desc)
+            key = f"{plat.name}+{net.value}"
+            tid = progress.add_task(f"[dim]{plat.name} queued[/dim]", total=1, completed=0)
+            row_tasks[key] = tid
 
-            disk = vm_disks.get(plat.name)
-            t0 = time.monotonic()
-            try:
-                result = plat.run_benchmarks(network=net, disk_path=disk)
-                result.setup_time = time.monotonic() - t0
-                results.append(result)
-            except Exception as e:
-                results.append(PlatformNetResult(
-                    platform=plat.name,
-                    network=net.value,
-                    tier=plat.tier,
-                    cap_check=CapCheck(CapStatus.READY),
-                    errors=[str(e)],
-                    setup_time=time.monotonic() - t0,
-                ))
-
-            progress.advance(task)
+        with ThreadPoolExecutor(max_workers=max_parallel) as ex:
+            futs = [ex.submit(bench_one, plat, net) for plat, net in runnable]
+            for f in as_completed(futs):
+                results.append(f.result())
 
     return results
 
@@ -370,7 +440,8 @@ def print_results(results: list[PlatformNetResult]):
         )
 
     console.print()
-    console.print(table)
+    with console.pager(styles=True):
+        console.print(table)
     console.print()
 
 
@@ -418,6 +489,29 @@ def save_results(results: list[PlatformNetResult], output_path: Path):
 
     output_path.write_text(json.dumps(data, indent=2))
     console.print(f"\n[dim]Results saved to {output_path}[/dim]")
+
+
+def load_results_from_json(path: Path) -> list[PlatformNetResult]:
+    """Load benchmark results from a saved JSON file."""
+    from .util import BenchResult
+    data = json.loads(path.read_text())
+    results = []
+    tier_map = {t.value: t for t in Tier}
+    for e in data["results"]:
+        r = PlatformNetResult(
+            platform=e["platform"],
+            network=e["network"],
+            tier=tier_map.get(e.get("tier", ""), Tier.T1_NAMESPACE),
+            cap_check=CapCheck(CapStatus.READY),
+            errors=e.get("errors", []),
+            setup_time=e.get("setup_time_s", 0.0),
+        )
+        for attr, key in [("cpu_result","cpu"),("mem_result","mem"),("disk_result","disk"),
+                          ("net_latency_result","net_latency"),("net_bandwidth_result","net_bandwidth")]:
+            if key in e:
+                setattr(r, attr, BenchResult(metric=key, value=e[key]["value"], unit=e[key]["unit"]))
+        results.append(r)
+    return results
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -469,12 +563,26 @@ Benchmarks run:         CPU (prime sieve), memory (dd), disk I/O (write+read),
                         help="Save results to JSON file")
     parser.add_argument("--tiers", type=str, default="",
                         help="Comma-separated tiers to include (e.g., tier1,tier2,tier3)")
+    parser.add_argument("--continue", dest="load_results", type=Path, default=None,
+                        metavar="FILE",
+                        help="Load saved JSON results and display table (skip benchmarking)")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     start_time = time.monotonic()
+
+    # ── --continue: load saved results and display table ─────────────────
+    if args.load_results:
+        p = args.load_results
+        if not p.exists():
+            console.print(f"[red]File not found: {p}[/red]")
+            sys.exit(1)
+        results = load_results_from_json(p)
+        console.print(f"[dim]Loaded {len(results)} results from {p}[/dim]\n")
+        print_results(results)
+        return
 
     # ── Header ───────────────────────────────────────────────────────────
     console.print()
