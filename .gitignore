@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# uv
+.python-version
+
+# Benchmark outputs
+vmb_results.json
+*.json
+
+# VM disks
+~/disks/
+
+# Build artifacts
+~/src/
+
+# IDE
+.vscode/
+.idea/
+
+# Planning docs
+.planning/
+.claude/
