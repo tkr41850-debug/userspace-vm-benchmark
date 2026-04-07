@@ -78,58 +78,88 @@ class QemuTcgPlatform(Platform):
             case NetBackend.TAP:
                 return ["-nic", "tap,ifname=vmbtap0,script=no,downscript=no,model=virtio"]
 
+    def _build_initramfs(self, script_path: str, work_dir: str) -> Optional[str]:
+        """Build a minimal initramfs that runs the bench script and powers off."""
+        import shutil, stat
+        initrd = os.path.join(work_dir, "initrd.cpio.gz")
+        root = os.path.join(work_dir, "initrd_root")
+
+        # Build directory tree
+        for d in ("bin", "proc", "sys", "dev", "tmp"):
+            os.makedirs(os.path.join(root, d), exist_ok=True)
+
+        # Copy busybox or sh
+        sh = shutil.which("busybox") or shutil.which("sh") or "/bin/sh"
+        dest_sh = os.path.join(root, "bin", "sh")
+        shutil.copy2(sh, dest_sh)
+        os.chmod(dest_sh, 0o755)
+
+        # Copy the bench script
+        import shutil as _sh
+        _sh.copy2(script_path, os.path.join(root, "bench.sh"))
+
+        # Write /init
+        init_script = (
+            "#!/bin/sh\n"
+            "mount -t proc proc /proc\n"
+            "mount -t sysfs sysfs /sys\n"
+            "mount -t devtmpfs devtmpfs /dev 2>/dev/null || "
+            "  mknod /dev/null c 1 3\n"
+            "sh /bench.sh\n"
+            "echo VMB_DONE=1\n"
+            "poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger\n"
+        )
+        init_path = os.path.join(root, "init")
+        with open(init_path, "w") as f:
+            f.write(init_script)
+        os.chmod(init_path, 0o755)
+
+        # Pack cpio
+        import subprocess
+        r = subprocess.run(
+            ["sh", "-c",
+             f"cd {root} && find . | cpio -o -H newc 2>/dev/null | gzip > {initrd}"],
+            capture_output=True, timeout=30,
+        )
+        return initrd if r.returncode == 0 and os.path.exists(initrd) else None
+
     def run_command(self, cmd: list[str], network: NetBackend,
                     disk_path: Optional[Path] = None, timeout: int = 120) -> str:
-        """For VMs, we inject the bench script via virtio-9p or serial console.
-
-        Since full VM boot is slow, for the benchmark we create a tiny
-        initramfs that runs the script and outputs results on serial.
-        """
         qemu = which("qemu-system-x86_64")
-
-        # For a real benchmark, we'd boot the VM and run commands inside.
-        # Here we use QEMU's -kernel/-initrd with a custom init that runs our script.
-        # This avoids the full OS boot overhead for measuring isolation overhead.
-
-        if not cmd or len(cmd) < 2:
+        if not cmd:
             return ""
 
         script_path = cmd[-1]
-        # Create a minimal wrapper that boots a kernel and runs the script
-        # For now, use QEMU's built-in Linux boot with the host kernel
-        kernel = "/boot/vmlinuz" if os.path.exists("/boot/vmlinuz") else ""
-        if not kernel:
-            # Try common paths
-            import glob
-            kernels = glob.glob("/boot/vmlinuz-*")
-            if kernels:
-                kernel = kernels[0]
 
-        if not kernel:
-            # Can't do direct kernel boot - return marker for skip
+        import glob, tempfile
+        kernels = sorted(glob.glob("/boot/vmlinuz*"))
+        if not kernels:
             return "QEMU_SKIP=no_kernel"
+        kernel = kernels[0]
 
-        net_args = self._get_net_args(network)
-        args = [
-            qemu,
-            "-machine", "accel=tcg",
-            "-m", "512M",
-            "-nographic",
-            "-no-reboot",
-            "-kernel", kernel,
-            "-append", f"console=ttyS0 init=/bin/sh -- -c 'cat {script_path} | sh; poweroff -f'",
-        ] + net_args + [
-            "-serial", "stdio",
-        ]
+        with tempfile.TemporaryDirectory(prefix="vmb_qemu_") as td:
+            initrd = self._build_initramfs(script_path, td)
+            if not initrd:
+                return "QEMU_SKIP=initrd_build_failed"
 
-        if disk_path and disk_path.exists():
-            args += ["-drive", f"file={disk_path},format=qcow2,if=virtio"]
+            net_args = self._get_net_args(network)
+            args = [
+                qemu,
+                "-machine", "accel=tcg",
+                "-m", "256M",
+                "-nographic",
+                "-no-reboot",
+                "-kernel", kernel,
+                "-initrd", initrd,
+                "-append", "console=ttyS0 quiet",
+                "-serial", "stdio",
+            ] + net_args
 
-        try:
-            r = run(args, timeout=timeout, check=False)
-            return r.stdout
-        except Exception as e:
-            return f"QEMU_ERROR={e}"
+            try:
+                r = run(args, timeout=timeout, check=False)
+                return r.stdout
+            except Exception as e:
+                return f"QEMU_ERROR={e}"
 
 
 class UmlPlatform(Platform):

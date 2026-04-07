@@ -82,8 +82,8 @@ def install_passt() -> bool:
         "https://passt.top/passt",
         [
             "sed -i 's/-std=c11/-std=gnu11/g' Makefile",
-            # Remove static_assert from CASE macro — it's a compile-time size check only
-            r"sed -i '/static_assert.*IPPROTO_STRLEN/d' ip.c",
+            # Remove 2-line static_assert from CASE macro (fails on gcc <11 after case label)
+            r"sed -i '/static_assert.*IPPROTO_STRLEN/{N;d}' ip.c",
             f"make -j$(nproc) prefix={LOCAL_BIN}/..",
             f"make install prefix={LOCAL_BIN}/..",
         ],
