@@ -440,8 +440,7 @@ def print_results(results: list[PlatformNetResult]):
         )
 
     console.print()
-    with console.pager(styles=True):
-        console.print(table)
+    console.print(table)
     console.print()
 
 
@@ -563,8 +562,8 @@ Benchmarks run:         CPU (prime sieve), memory (dd), disk I/O (write+read),
                         help="Save results to JSON file")
     parser.add_argument("--tiers", type=str, default="",
                         help="Comma-separated tiers to include (e.g., tier1,tier2,tier3)")
-    parser.add_argument("--continue", dest="load_results", type=Path, default=None,
-                        metavar="FILE",
+    parser.add_argument("--continue", dest="load_results", nargs="?",
+                        const="vmb_results.json", default=None, metavar="FILE",
                         help="Load saved JSON results and display table (skip benchmarking)")
     return parser.parse_args()
 
@@ -574,8 +573,8 @@ def main():
     start_time = time.monotonic()
 
     # ── --continue: load saved results and display table ─────────────────
-    if args.load_results:
-        p = args.load_results
+    if args.load_results is not None:
+        p = Path(args.load_results)
         if not p.exists():
             console.print(f"[red]File not found: {p}[/red]")
             sys.exit(1)
