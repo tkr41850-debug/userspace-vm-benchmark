@@ -5,6 +5,7 @@ description = "Rootless isolation technology benchmark suite for x86_64 Linux"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "meson>=1.10.2",
     "psutil>=7.2.2",
     "rich>=14.3.3",
 ]

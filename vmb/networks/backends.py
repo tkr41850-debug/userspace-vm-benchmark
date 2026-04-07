@@ -15,15 +15,12 @@ def check_slirp() -> CapCheck:
 
 def _ensure_libslirp() -> bool:
     """Build libslirp from source into ~/.local/ if not present."""
-    from ..util import SRC_DIR, LOCAL_DIR, LOCAL_LIB, ensure_cmake_ninja
-    import os, subprocess, multiprocessing
+    from ..util import SRC_DIR, LOCAL_DIR, LOCAL_LIB
+    import os, subprocess
     if (LOCAL_LIB / "pkgconfig" / "slirp.pc").exists():
         return True
-    if not ensure_cmake_ninja():
-        return False
     src = SRC_DIR / "libslirp"
-    build_env = {**os.environ,
-                 "PKG_CONFIG_PATH": str(LOCAL_LIB / "pkgconfig")}
+    build_env = {**os.environ, "PKG_CONFIG_PATH": str(LOCAL_LIB / "pkgconfig")}
     try:
         if not src.exists():
             r = subprocess.run(
@@ -32,12 +29,12 @@ def _ensure_libslirp() -> bool:
                 timeout=120, capture_output=True, text=True, env=build_env,
             )
             if r.returncode != 0:
+                print(f"\n[BUILD FAIL] libslirp clone:\n{r.stderr}", flush=True)
                 return False
-        nproc = multiprocessing.cpu_count()
         for cmd in [
-            f"meson setup build --prefix={LOCAL_DIR} --default-library=static",
-            f"ninja -C build",
-            f"ninja -C build install",
+            f"uv run meson setup build --prefix={LOCAL_DIR} --default-library=static",
+            "uv run ninja -C build",
+            "uv run ninja -C build install",
         ]:
             r = subprocess.run(["sh", "-c", cmd], cwd=str(src), timeout=300,
                                capture_output=True, text=True, env=build_env)
@@ -46,24 +43,27 @@ def _ensure_libslirp() -> bool:
                 return False
         return (LOCAL_LIB / "pkgconfig" / "slirp.pc").exists()
     except subprocess.TimeoutExpired:
+        print("\n[BUILD FAIL] libslirp: timed out", flush=True)
         return False
 
 
 def install_slirp() -> bool:
-    """Build slirp4netns from source."""
-    if not _ensure_libslirp():
+    """Download slirp4netns pre-built binary."""
+    import subprocess, os
+    url = "https://github.com/rootless-containers/slirp4netns/releases/download/v1.3.3/slirp4netns-x86_64"
+    dest = LOCAL_BIN / "slirp4netns"
+    try:
+        r = subprocess.run(
+            ["sh", "-c", f"curl -fsSL {url} -o {dest} && chmod +x {dest}"],
+            timeout=60, capture_output=True, text=True, env=os.environ,
+        )
+        if r.returncode != 0:
+            print(f"\n[BUILD FAIL] slirp4netns download:\n{r.stderr}", flush=True)
+            return False
+        return which("slirp4netns") is not None
+    except subprocess.TimeoutExpired:
+        print("\n[BUILD FAIL] slirp4netns: timed out", flush=True)
         return False
-    return build_from_source(
-        "slirp4netns",
-        "https://github.com/rootless-containers/slirp4netns.git",
-        [
-            "autoreconf -fi",
-            f"./configure --prefix={LOCAL_BIN}/..",
-            f"make -j$(nproc) && make install",
-        ],
-        "slirp4netns",
-        branch="master",
-    )
 
 
 def check_passt() -> CapCheck:
@@ -82,6 +82,8 @@ def install_passt() -> bool:
         "https://passt.top/passt",
         [
             "sed -i 's/-std=c11/-std=gnu11/g' Makefile",
+            # Remove static_assert from CASE macro — it's a compile-time size check only
+            r"sed -i '/static_assert.*IPPROTO_STRLEN/d' ip.c",
             f"make -j$(nproc) prefix={LOCAL_BIN}/..",
             f"make install prefix={LOCAL_BIN}/..",
         ],

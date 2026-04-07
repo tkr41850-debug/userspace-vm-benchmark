@@ -83,6 +83,11 @@ def run_capability_scan(platforms_list, networks: list[NetBackend]) -> dict:
             for net in networks:
                 key = f"{plat.name}+{net.value}"
                 cap = plat.check_capability(net)
+                # If platform is READY but network backend binary is missing, downgrade
+                if cap.status == CapStatus.READY and net != NetBackend.TAP:
+                    net_cap = check_network(net)
+                    if net_cap.status != CapStatus.READY:
+                        cap = net_cap
                 results[key] = {
                     "platform": plat.name,
                     "network": net.value,
